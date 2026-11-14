@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Contrast Buddy Page Scanner",
+  "version": "1.0.0",
+  "description": "Scan visible webpage text contrast locally, including a visual review of image backgrounds.",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_title": "Scan page contrast",
+    "default_popup": "popup.html"
+  }
+}
