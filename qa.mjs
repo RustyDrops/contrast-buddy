@@ -5,7 +5,8 @@ import vm from 'node:vm';
 const html = await readFile(new URL('./index.html', import.meta.url), 'utf8');
 const script = html.match(/<script>([\s\S]*?)<\/script>/)?.[1];
 assert.ok(script, 'page has an inline script');
-assert.doesNotMatch(script, /\b(?:localStorage|sessionStorage|fetch|XMLHttpRequest|sendBeacon)\b/, 'colors are not stored or sent');
+assert.doesNotMatch(script, /\b(?:localStorage|sessionStorage|XMLHttpRequest|sendBeacon)\b/, 'colors are not stored or sent to a service');
+assert.match(script, /credentials:'omit', referrerPolicy:'no-referrer'/, 'explicit page imports omit credentials and referrers');
 assert.match(html, /aria-live="polite"/, 'results and errors are announced');
 assert.match(html, /@media\(max-width:780px\)/, 'layout has a narrow-screen breakpoint');
 assert.match(html, /prefers-reduced-motion:reduce/, 'motion respects the system preference');
@@ -22,7 +23,7 @@ class Element {
   insertAdjacentHTML(position, html) { this.innerHTML += html; }
   fire(type = 'input', event = {}) { return this.listeners[type]?.(event); }
 }
-const ids = Object.fromEntries(['foreground','background','foreground-picker','background-picker','foreground-error','background-error','ratio','aa-normal','aa-large','aaa-normal','aaa-large','aa-ui','verdict','preview','recommendation','recommendation-copy','fix-comparison','fix-details','fix-before','fix-after','fix-before-color','fix-after-color','fix-before-ratio','fix-after-ratio','apply-recommendation','copy-suggested','undo-fix','fix-target','css-format','copy-css','reset','toast','swap','copy','explore-options','more-options','aaa-options','view-original','copy-selected','result-source','explore-status','explore-results','explore-target-hint','screen-fg','screen-bg','share-pair','save-pair','clear-board','board-status','board-results','audit-tokens','token-input','token-status','token-results','image-file','image-canvas','image-status','image-samples','type-background','type-header','type-subheader','type-body','type-header-result','type-subheader-result','type-body-result'].map(id => [id, new Element(id)]));
+const ids = Object.fromEntries(['foreground','background','foreground-picker','background-picker','foreground-error','background-error','ratio','aa-normal','aa-large','aaa-normal','aaa-large','aa-ui','verdict','preview','recommendation','recommendation-copy','fix-comparison','fix-details','fix-before','fix-after','fix-before-color','fix-after-color','fix-before-ratio','fix-after-ratio','apply-recommendation','copy-suggested','undo-fix','fix-target','css-format','copy-css','reset','toast','swap','copy','explore-options','more-options','aaa-options','view-original','copy-selected','result-source','explore-status','explore-results','explore-target-hint','screen-fg','screen-bg','share-pair','save-pair','clear-board','board-status','board-results','audit-tokens','token-input','token-status','token-results','image-file','image-canvas','image-status','image-samples','type-background','type-header','type-subheader','type-body','type-header-picker','type-subheader-picker','type-body-picker','type-header-result','type-subheader-result','type-body-result','type-url','type-url-load','type-url-status','type-scan-data','type-scan-import','type-scan-status'].map(id => [id, new Element(id)]));
 ids.foreground.value = '#24583B'; ids.background.value = '#FFFFFF';
 ids['fix-target'].value = '4.5'; ids['css-format'].value = 'declarations';
 const document = { getElementById: id => ids[id] };
@@ -31,6 +32,25 @@ const navigator = { clipboard: { async writeText(value) { if (clipboardFails) th
 class MockURL extends URL { static createObjectURL() { return 'blob:local-test'; } static revokeObjectURL() {} }
 class MockImage { naturalWidth = 100; naturalHeight = 50; set src(value) { this.onload?.(); } }
 class MockEyeDropper { async open() { return { sRGBHex: '#ABC123' }; } }
+const declaration = color => ({ getPropertyValue: name => name === 'color' ? color : '', getPropertyPriority: () => '' });
+const sourceElement = (tag, inline = '') => ({ nodeType: 1, tagName: tag.toUpperCase(), parentElement: null, style: declaration(inline), matches: selector => selector === tag || selector === `${tag}.accent` });
+const sourceNodes = { h1: sourceElement('h1', '#123456'), 'h2, h3': sourceElement('h2'), p: sourceElement('p') };
+const sourceRoot = {
+  querySelector: selector => sourceNodes[selector],
+  querySelectorAll: () => [{ tagName: 'STYLE', textContent: 'inline-fixture' }, { tagName: 'LINK', getAttribute: () => '/style.css' }]
+};
+document.createElement = tag => tag === 'template' ? { content: sourceRoot, set innerHTML(value) {} } : sourceElement('body');
+class MockCSSStyleSheet {
+  replaceSync(css) { this.cssRules = css === 'inline-fixture' ? [{ type: 1, selectorText: 'h2', style: declaration('#456789') }, { type: 1, selectorText: 'p', style: declaration('rgb(100, 120, 140)') }] : [{ type: 1, selectorText: 'h2.accent', style: declaration('#ABCDEF') }]; }
+}
+let blockedPage = false, blockedStylesheet = false, deferPage = false, releasePage, requests = [];
+const mockFetch = async (url, options) => {
+  requests.push({ url, options });
+  if (blockedPage || blockedStylesheet && url.endsWith('/style.css')) throw new TypeError('blocked');
+  const response = { ok: true, url, text: async () => url.endsWith('/style.css') ? 'external-fixture' : '<html>fixture</html>' };
+  if (deferPage && !url.endsWith('/style.css')) return new Promise(resolve => { releasePage = () => resolve(response); });
+  return response;
+};
 ids['image-canvas'].getContext = () => ({ drawImage() {}, getImageData: () => ({ data: [80, 120, 160, 255] }) });
 ids['image-canvas'].getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 50 });
 const location = { href: 'https://example.test/contrast', hash: '' };
@@ -42,7 +62,8 @@ const hslOf = hex => {
   const hue = (max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4) * 60;
   return { hue, saturation: d / (1 - Math.abs(2 * light - 1)) };
 };
-vm.runInNewContext(script, { document, navigator, location, URL: MockURL, URLSearchParams, Image: MockImage, EyeDropper: MockEyeDropper, setTimeout: fn => { fn(); return 1; }, clearTimeout() {} });
+vm.runInNewContext(script, { document, navigator, location, URL: MockURL, URLSearchParams, Image: MockImage, EyeDropper: MockEyeDropper, CSSStyleSheet: MockCSSStyleSheet, AbortController, fetch: mockFetch, setTimeout: () => 1, clearTimeout() {} });
+assert.equal(requests.length, 0, 'pages are not requested until the user asks');
 assert.equal(ids.ratio.textContent, '8.29');
 assert.equal(ids.verdict.textContent, 'AA and AAA pass');
 assert.equal(ids['aaa-normal'].textContent, '✓ Pass');
@@ -50,6 +71,9 @@ assert.equal(ids['explore-target-hint'].textContent, 'For AA normal text');
 assert.ok(html.indexOf('Runs privately in your browser') < html.indexOf('id="screen-fg"') && html.indexOf('id="screen-bg"') < html.indexOf('<header>'), 'screen picker controls sit beneath the privacy notice');
 ids['type-header'].value = '#777777'; ids['type-header'].fire('input');
 assert.match(ids['type-header-result'].textContent, /4\.48:1 · AA normal needs work · AA large pass/);
+assert.equal(ids['type-header-picker'].value, '#777777', 'typed HEX syncs to the picker');
+ids['type-subheader-picker'].value = '#abc123'; ids['type-subheader-picker'].fire('input');
+assert.equal(ids['type-subheader'].value, '#ABC123', 'picker updates the optional text field');
 ids['type-subheader'].value = '#000'; ids['type-subheader'].fire('input');
 assert.match(ids['type-subheader-result'].textContent, /21\.00:1 · AA normal pass/);
 ids['type-body'].value = 'not a color'; ids['type-body'].fire('input');
@@ -331,4 +355,33 @@ assert.equal(ids.background.value, '#5078A0');
 ids['image-canvas'].fire('keydown', { key: 'ArrowRight', preventDefault() {} });
 ids['image-canvas'].fire('keydown', { key: 'Enter', preventDefault() {} });
 assert.match(ids['image-status'].textContent, /Sampled #5078A0/);
-console.log('PASS: contrast, appended options, screen picking, share-link round trip, session board, token audit, image sampling, preview order, and existing actions.');
+ids['type-url'].value = 'https://example.test/page';
+await ids['type-url-load'].fire('click');
+assert.equal(ids['type-header'].value, '#123456');
+assert.equal(ids['type-subheader'].value, '#ABCDEF', 'more specific stylesheet color wins');
+assert.equal(ids['type-body'].value, '#64788C', 'RGB source colors are converted to HEX');
+assert.equal(ids['type-body-picker'].value, '#64788C');
+assert.equal(requests.length, 2); assert.equal(requests[0].options.credentials, 'omit'); assert.equal(requests[0].options.referrerPolicy, 'no-referrer');
+assert.match(ids['type-url-status'].textContent, /Estimates may miss dynamic styles/);
+blockedStylesheet = true; await ids['type-url-load'].fire('click');
+assert.equal(ids['type-subheader'].value, '#456789', 'available inline CSS is still used when a stylesheet is blocked');
+assert.match(ids['type-url-status'].textContent, /Some stylesheets could not be read/);
+blockedStylesheet = false; sourceNodes['h2, h3'] = null; ids['type-subheader'].value = '#ABC123'; await ids['type-url-load'].fire('click');
+assert.equal(ids['type-subheader'].value, '#ABC123', 'a missing heading does not overwrite the existing field');
+sourceNodes['h2, h3'] = sourceElement('h2');
+deferPage = true;
+const delayedImport = ids['type-url-load'].fire('click');
+ids['type-header'].value = '#DECADE'; ids['type-header'].fire('input');
+deferPage = false; releasePage(); await delayedImport;
+assert.equal(ids['type-header'].value, '#DECADE', 'edits during a URL import are preserved');
+assert.match(ids['type-url-status'].textContent, /edited fields were kept/);
+blockedPage = true; await ids['type-url-load'].fire('click');
+assert.match(ids['type-url-status'].textContent, /Could not read this page/);
+assert.equal(ids['type-header'].value, '#DECADE', 'a blocked URL does not overwrite colors');
+blockedPage = false; const requestCount = requests.length; ids['type-url'].value = 'javascript:alert(1)'; await ids['type-url-load'].fire('click');
+assert.equal(requests.length, requestCount, 'unsupported URL schemes are not requested');
+ids['type-scan-data'].value = '{"header":"#111","subheader":"#AABBCC","body":"#123456"}'; ids['type-scan-import'].fire('click');
+assert.equal(ids['type-header'].value, '#111111'); assert.equal(ids['type-subheader'].value, '#AABBCC'); assert.equal(ids['type-body'].value, '#123456');
+assert.match(ids['type-scan-status'].textContent, /Imported 3 colors/);
+ids['type-scan-data'].value = '{not json'; ids['type-scan-import'].fire('click'); assert.match(ids['type-scan-status'].textContent, /Paste the type colors/);
+console.log('PASS: optional color pickers, URL source import and blocked sites, scanner import, contrast, options, sharing, token audit, and image sampling.');

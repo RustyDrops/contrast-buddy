@@ -54,9 +54,11 @@ export function scanPage() {
     const required = largeText ? 3 : 4.5;
     const contrast = ratio(foreground.rgb, background.rgb);
     const selector = element.id ? `#${element.id}` : element.tagName.toLowerCase() + (typeof element.className === 'string' && element.className.trim() ? '.' + element.className.trim().split(/\s+/).slice(0, 2).join('.') : '');
+    const heading = element.closest?.('h1, h2, h3, p') || (/^(H1|H2|H3|P)$/i.test(element.tagName) ? element : null);
+    const typeRole = heading?.tagName === 'H1' ? 'header' : /^(H2|H3)$/.test(heading?.tagName || '') ? 'subheader' : heading?.tagName === 'P' ? 'body' : null;
     nodes.push({
       text: text.slice(0, 120), selector, foreground: toHex(foreground.rgb), background: toHex(background.rgb), contrast: Number(contrast.toFixed(3)), required,
-      largeText, imageBackground, gradientBackground, translucent, filtered,
+      largeText, imageBackground, gradientBackground, translucent, filtered, typeRole,
       rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom },
       exact: !imageBackground && !translucent && !filtered,
       status: !imageBackground && !translucent && !filtered ? contrast >= required ? 'pass' : 'fail' : 'review'

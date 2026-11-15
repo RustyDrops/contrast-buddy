@@ -3,9 +3,13 @@ import { sampleImageBackgrounds } from './pixel-sampler.mjs';
 
 const $ = id => document.getElementById(id);
 const button = $('scan');
+let typeColors = {};
 
 function render(report, screenshot) {
   $('report').hidden = false;
+  typeColors = {};
+  for (const node of report.nodes) if (node.typeRole && !node.translucent && !node.filtered && !typeColors[node.typeRole]) typeColors[node.typeRole] = node.foreground;
+  $('copy-type-colors').hidden = Object.keys(typeColors).length === 0;
   $('page-title').textContent = `${report.title} · ${report.host}`;
   $('counts').textContent = `${report.nodes.length} visible text samples · ${report.viewport.width} × ${report.viewport.height} viewport · ${report.skipped} unsupported styles skipped`;
   $('scope-note').textContent = 'This scan covers the visible main frame only. Embedded cross-origin frames and content outside the viewport are not included.';
@@ -57,6 +61,11 @@ function render(report, screenshot) {
   }
   $('status').textContent = 'Scan complete. Image/gradient results are estimates, not conformance findings.';
 }
+
+$('copy-type-colors').addEventListener('click', async () => {
+  try { await navigator.clipboard.writeText(JSON.stringify(typeColors)); $('status').textContent = 'Type colors copied. Paste them into Contrast Buddy.'; }
+  catch { $('status').textContent = 'Could not copy colors in this browser.'; }
+});
 
 button.addEventListener('click', async () => {
   button.disabled = true; $('status').textContent = 'Scanning the visible page…'; $('report').hidden = true;
